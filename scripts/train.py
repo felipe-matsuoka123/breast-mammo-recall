@@ -83,9 +83,9 @@ def main():
     optimizer = optim.Adam(model.parameters(), lr=LR)
     scheduler = lr_scheduler.ReduceLROnPlateau(
         optimizer,
-        mode='max',  # Use 'max' since we're tracking AUC
-        factor=0.1,  # Reduce LR by factor of 10
-        patience=2,  # Number of epochs to wait before reducing LR
+        mode='max', 
+        factor=0.1,  
+        patience=2,  
         min_lr=1e-7
     )
 

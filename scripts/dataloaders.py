@@ -41,7 +41,7 @@ class MammoDataset(Dataset):
         elif label == 0 and self.transform_neg:
             image = self.transform_neg(image)
         return image, label, study_id
-
+    
 
     
 
