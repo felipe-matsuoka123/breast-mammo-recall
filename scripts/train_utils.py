@@ -1,7 +1,6 @@
 import torch
 from sklearn.metrics import f1_score, roc_auc_score
 from tqdm import tqdm
-from sklearn.metrics import roc_auc_score
 from torchvision import transforms
 import torch.nn.functional as F
 import numpy as np
@@ -14,7 +13,8 @@ def train_one_epoch(model, optimizer, dataloader, criterion, device):
     all_probs = []
     
     pbar = tqdm(dataloader, desc='Training', leave=True)
-    for images, labels, _ in pbar:
+    # Unpack five values from the new dataset: images, labels, study_id, patient_id, laterality
+    for images, labels, study_id, patient_id, laterality in pbar:
         images = images.to(device)
         labels = labels.to(device).unsqueeze(1).float()
 
@@ -25,7 +25,6 @@ def train_one_epoch(model, optimizer, dataloader, criterion, device):
         optimizer.step()
         
         running_loss += loss.item() * images.size(0)
-        
         pbar.set_postfix({'loss': f'{loss.item():.4f}'})
         
         probs = torch.sigmoid(outputs).detach().cpu().numpy().flatten()
@@ -51,16 +50,14 @@ def validate(model, dataloader, criterion, device):
     all_probs = []
     
     with torch.no_grad():
-        # Add tqdm progress bar
         pbar = tqdm(dataloader, desc='Validating', leave=True)
-        for images, labels, _ in pbar:
+        for images, labels, study_id, patient_id, laterality in pbar:
             images = images.to(device)
             labels = labels.to(device).unsqueeze(1).float()
             outputs = model(images)
             loss = criterion(outputs, labels)
             running_loss += loss.item() * images.size(0)
             
-            # Update progress bar with current loss
             pbar.set_postfix({'loss': f'{loss.item():.4f}'})
             
             probs = torch.sigmoid(outputs).detach().cpu().numpy().flatten()
@@ -82,15 +79,11 @@ def inference_on_loader(model, dataloader, device):
     model.eval()
     results = []
     with torch.no_grad():
-        for images, labels, _ in dataloader:
+        for images, labels, study_id, patient_id, laterality in dataloader:
             images = images.to(device)
-            # Make sure labels have shape [batch_size, 1] and are floats
             labels = labels.to(device).unsqueeze(1).float()
-            # Forward pass: get raw logits
             outputs = model(images)
-            # Compute probabilities
             probs = torch.sigmoid(outputs)
-            # Compute predictions based on threshold 0.5
             preds = (probs > 0.5).int()
             losses = F.binary_cross_entropy_with_logits(outputs, labels, reduction='none').squeeze(1)
             
@@ -102,7 +95,6 @@ def inference_on_loader(model, dataloader, device):
             for i in range(len(labels_cpu)):
                 results.append((images_cpu[i], labels_cpu[i], probs_cpu[i], losses_cpu[i]))
     return results
-
 
 def get_transforms(IMAGE_SIZE):
     transform_pos = transforms.Compose([
@@ -148,25 +140,25 @@ def inference_per_study_auc(model, dataloader, device):
     study_truths = {}
 
     with torch.no_grad():
-        for images, labels, study_ids in dataloader:
+        for images, labels, study_id, patient_id, laterality in dataloader:
             images = images.to(device)
             outputs = model(images)  # raw logits
             probs = torch.sigmoid(outputs).squeeze(1).cpu().numpy()  # predicted probability per image
             labels = labels.cpu().numpy()
 
-            # Group predictions and ground truth by study_id
-            for study_id, prob, label in zip(study_ids, probs, labels):
-                if study_id not in study_preds:
-                    study_preds[study_id] = []
-                    study_truths[study_id] = []
-                study_preds[study_id].append(prob)
-                study_truths[study_id].append(label)
+            # Group predictions by study (AccessionNumber)
+            for study, prob, label in zip(study_id, probs, labels):
+                if study not in study_preds:
+                    study_preds[study] = []
+                    study_truths[study] = []
+                study_preds[study].append(prob)
+                study_truths[study].append(label)
 
     all_avg_probs = []
     all_truths = []
-    for study_id in study_preds:
-        avg_prob = np.mean(study_preds[study_id])
-        true_label = study_truths[study_id][0]  # assume all images in a study share the same ground truth
+    for study in study_preds:
+        avg_prob = np.mean(study_preds[study])
+        true_label = study_truths[study][0]  # assume consistency within a study
         all_avg_probs.append(avg_prob)
         all_truths.append(true_label)
     

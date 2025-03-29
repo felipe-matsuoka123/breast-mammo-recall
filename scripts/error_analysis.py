@@ -5,19 +5,32 @@ from sklearn.metrics import confusion_matrix, roc_curve, roc_auc_score
 import wandb
 
 def wandb_table_top_losses(results, top_n=10):
+    # Check if results include extra metadata (Study, Patient, Laterality)
+    if results and len(results[0]) >= 7:
+        columns = ["Image", "GT", "Probability", "Loss", "Study", "Patient", "Laterality"]
+    else:
+        columns = ["Image", "GT", "Probability", "Loss"]
+    
     results_sorted = sorted(results, key=lambda x: x[3], reverse=True)
     top_results = results_sorted[:top_n]
-    table = wandb.Table(columns=["Image", "GT", "Probability", "Loss"])
+    table = wandb.Table(columns=columns)
     
     mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
     std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
     
-    for (img, label, prob, loss) in top_results:
+    for res in top_results:
+        if len(res) >= 7:
+            img, label, prob, loss, study, patient, laterality = res
+        else:
+            img, label, prob, loss = res
         img_denorm = img.clone().detach() * std + mean
         img_denorm = img_denorm.clamp(0, 1)
         np_img = img_denorm.permute(1, 2, 0).cpu().numpy()
         wb_img = wandb.Image(np_img, caption=f"GT: {int(label)}, Prob: {prob:.2f}, Loss: {loss:.2f}")
-        table.add_data(wb_img, int(label), prob, loss)
+        if len(res) >= 7:
+            table.add_data(wb_img, int(label), prob, loss, study, patient, laterality)
+        else:
+            table.add_data(wb_img, int(label), prob, loss)
         
     return table
 
@@ -43,5 +56,3 @@ def get_roc_curve_fig(y_true, y_probs, title_prefix="ROC Curve"):
     ax.legend(loc="lower right")
     plt.tight_layout()
     return fig
-
-

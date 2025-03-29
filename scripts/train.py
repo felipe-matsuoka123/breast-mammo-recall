@@ -9,40 +9,45 @@ from model import MammoModel, ConvnextMammoModel
 from error_analysis import get_confusion_matrix_fig, get_roc_curve_fig, wandb_table_top_losses
 from torch.optim import lr_scheduler
 
-CSV_PATH = '/media/felipe-matsuoka/FelipeSSD/datasets/physionet.org/files/vindr-mammo/1.0.0/breast-level_annotations.csv'
-BASE_IMG_DIR = '/media/felipe-matsuoka/FelipeSSD/datasets/vindr-mammo-png'
+# ----- CONFIGURATION -----
+CSV_PATH = '/home/felipe-matsuoka/Desktop/breast-screening/scripts/spr_train_image_level.csv'
+BASE_IMG_DIR = '/home/felipe-matsuoka/Documents/spr-mammo-recall/spr-mmg-merged'
 BATCH_SIZE = 8
 NUM_EPOCHS = 5
 LR = 1e-4
 NUM_WORKERS = 4
 IMAGE_SIZE = 224
 DROP_OUT_RATE = 0.3
-TRAIN_SPLIT = 0.8
-RUN_NAME = 'efficientnet_b0_study_auc'
+TRAIN_SPLIT = 0.8 
+RUN_NAME = 'SPR_v0'
 
 def main():
     wandb.init(project="VinDrMammo", 
-    name = RUN_NAME,           
-    config={
-        "batch_size": BATCH_SIZE,
-        "learning_rate": LR,
-        "epochs": NUM_EPOCHS,
-        "model": "efficientnet_b0",
-        "image_size": IMAGE_SIZE,
-        "loss_function": "BCEWithLogitsLoss",
-        "optimizer": "Adam",
-        "dropout_rate": DROP_OUT_RATE,
-        "dataset": "3-channel (microcal, whole_range, soft_tissue)"
-    })
+               name=RUN_NAME,           
+               config={
+                   "batch_size": BATCH_SIZE,
+                   "learning_rate": LR,
+                   "epochs": NUM_EPOCHS,
+                   "model": "efficientnet_b0",
+                   "image_size": IMAGE_SIZE,
+                   "loss_function": "BCEWithLogitsLoss",
+                   "optimizer": "Adam",
+                   "dropout_rate": DROP_OUT_RATE,
+                   "dataset": "3-channel (microcal, whole_range, soft_tissue)"
+               })
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    # Load CSV and split data based on unique PatientIDs
     train_df, val_df, holdout_df = load_and_split_data(
         csv_path=CSV_PATH,
-        train_split=TRAIN_SPLIT
+        train_split=TRAIN_SPLIT  # default val_split=0.1, test=remaining 10%
     )
 
+    # Get transforms for positive, negative, and validation/test
     transform_pos, transform_neg, val_transform = get_transforms(IMAGE_SIZE)
-    train_labels = train_df['label'].values
+    
+    # Create a ratio sampler to ensure a fixed ratio of positives/negatives in training batches
+    train_labels = train_df['target'].values
     ratio_sampler = RatioBatchSampler(train_labels, batch_size=BATCH_SIZE, pos_count=1, neg_count=7)
 
     train_loader = create_dataloader(
@@ -102,7 +107,6 @@ def main():
             print(f"Saved new best model with validation AUC: {val_auc:.4f}")
             wandb.log({"best_val_auc": val_auc})
 
-
         print(f"Epoch {epoch+1}/{NUM_EPOCHS}")
         print(f"Train -> Loss: {train_loss:.4f}, F1: {train_f1:.4f}, AUC: {train_auc:.4f}")
         print(f"Val   -> Loss: {val_loss:.4f}, F1: {val_f1:.4f}, AUC: {val_auc:.4f}")
@@ -118,6 +122,7 @@ def main():
             "lr": current_lr
         })
     
+    # Load the best model for final evaluation
     model.load_state_dict(torch.load(best_model_path))
 
     holdout_loss, holdout_f1, holdout_auc = validate(model, holdout_loader, criterion, device)
@@ -133,6 +138,8 @@ def main():
     torch.save(model.state_dict(), "/home/felipe-matsuoka/Desktop/breast-screening/models/efficientnet_b0_mammo.pth")
     wandb.save("efficientnet_b0_mammo.pth")
     
+    # Inference returns tuples of:
+    # (image, label, probability, loss, study (AccessionNumber), patient (PatientID), laterality)
     results = inference_on_loader(model, holdout_loader, device)
     y_true = [r[1] for r in results]
     y_probs = [r[2] for r in results]
@@ -150,7 +157,6 @@ def main():
         "Study Level AUC": auc
     })
     
-
     wandb.finish()
 
 
