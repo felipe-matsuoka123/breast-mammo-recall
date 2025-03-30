@@ -4,7 +4,9 @@ from tqdm import tqdm
 from torchvision import transforms
 import torch.nn.functional as F
 import numpy as np
+from dataloaders import create_dataloader, load_and_split_data_cv
 
+# Funções de treinamento já existentes
 def train_one_epoch(model, optimizer, dataloader, criterion, device):
     model.train()
     running_loss = 0.0
@@ -13,7 +15,7 @@ def train_one_epoch(model, optimizer, dataloader, criterion, device):
     all_probs = []
     
     pbar = tqdm(dataloader, desc='Training', leave=True)
-    # Unpack five values from the new dataset: images, labels, study_id, patient_id, laterality
+    # Desempacota: images, labels, study_id, patient_id, laterality
     for images, labels, study_id, patient_id, laterality in pbar:
         images = images.to(device)
         labels = labels.to(device).unsqueeze(1).float()
@@ -39,7 +41,7 @@ def train_one_epoch(model, optimizer, dataloader, criterion, device):
     try:
         epoch_auc = roc_auc_score(all_labels, all_probs)
     except ValueError:
-        epoch_auc = 0.5  # default if only one class present
+        epoch_auc = 0.5  # caso só haja uma classe
     return epoch_loss, epoch_f1, epoch_auc
 
 def validate(model, dataloader, criterion, device):
@@ -142,11 +144,11 @@ def inference_per_study_auc(model, dataloader, device):
     with torch.no_grad():
         for images, labels, study_id, patient_id, laterality in dataloader:
             images = images.to(device)
-            outputs = model(images)  # raw logits
-            probs = torch.sigmoid(outputs).squeeze(1).cpu().numpy()  # predicted probability per image
+            outputs = model(images)  # logits
+            probs = torch.sigmoid(outputs).squeeze(1).cpu().numpy()
             labels = labels.cpu().numpy()
 
-            # Group predictions by study (AccessionNumber)
+            # Agrupa as predições por estudo (AccessionNumber)
             for study, prob, label in zip(study_id, probs, labels):
                 if study not in study_preds:
                     study_preds[study] = []
@@ -158,9 +160,54 @@ def inference_per_study_auc(model, dataloader, device):
     all_truths = []
     for study in study_preds:
         avg_prob = np.mean(study_preds[study])
-        true_label = study_truths[study][0]  # assume consistency within a study
+        true_label = study_truths[study][0]  # assume consistência
         all_avg_probs.append(avg_prob)
         all_truths.append(true_label)
     
     auc = roc_auc_score(all_truths, all_avg_probs)
     return auc
+
+# Novo loop de treinamento com Cross Validation
+def cross_validation_training(model_factory, optimizer_factory, criterion, csv_path, base_img_dir,
+                              transform_pos, transform_neg, val_transform, device, n_epochs=10, n_splits=5,
+                              batch_size=8, num_workers=4, upsample=True):
+
+    cv_splits, test_df = load_and_split_data_cv(csv_path, test_split=0.1, n_splits=n_splits)
+    fold_metrics = []
+    
+    for fold_idx, (train_df, val_df) in enumerate(cv_splits):
+        print(f"\nIniciando Fold {fold_idx+1}/{n_splits}")
+        model = model_factory().to(device)
+        optimizer = optimizer_factory(model.parameters())
+        
+        # Cria os dataloaders para treino e validação
+        train_loader = create_dataloader(train_df, base_img_dir, transform_neg, transform_pos,
+                                         batch_size=batch_size, shuffle=True, num_workers=num_workers, upsample=upsample)
+        val_loader = create_dataloader(val_df, base_img_dir, val_transform, val_transform,
+                                       batch_size=batch_size, shuffle=False, num_workers=num_workers, upsample=False)
+        
+        best_val_auc = 0.0
+        best_epoch = -1
+        for epoch in range(1, n_epochs+1):
+            train_loss, train_f1, train_auc = train_one_epoch(model, optimizer, train_loader, criterion, device)
+            val_loss, val_f1, val_auc = validate(model, val_loader, criterion, device)
+            print(f"Fold {fold_idx+1} - Epoch {epoch}/{n_epochs}: "
+                  f"Train Loss: {train_loss:.4f} | F1: {train_f1:.4f} | AUC: {train_auc:.4f} || "
+                  f"Val Loss: {val_loss:.4f} | F1: {val_f1:.4f} | AUC: {val_auc:.4f}")
+            
+            if val_auc > best_val_auc:
+                best_val_auc = val_auc
+                best_epoch = epoch
+
+        fold_metrics.append({'fold': fold_idx+1, 'best_val_auc': best_val_auc, 'best_epoch': best_epoch})
+        print(f"Finalizado Fold {fold_idx+1}. Melhor Val AUC: {best_val_auc:.4f} na Epoch {best_epoch}")
+    
+    # Opcional: Avaliação final no conjunto de teste (fixo)
+    test_loader = create_dataloader(test_df, base_img_dir, val_transform, val_transform,
+                                    batch_size=batch_size, shuffle=False, num_workers=num_workers, upsample=False)
+    # Aqui, para exemplificar, utilizamos o modelo do último fold para inferência (ideal é combinar ou retrenar com todos os dados)
+    test_loss, test_f1, test_auc = validate(model, test_loader, criterion, device)
+    print(f"\nDesempenho no Conjunto de Teste: Loss: {test_loss:.4f} | F1: {test_f1:.4f} | AUC: {test_auc:.4f}")
+    
+    return fold_metrics, test_auc
+
